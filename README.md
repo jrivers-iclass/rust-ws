@@ -37,7 +37,6 @@ The server will start on `ws://localhost:8000/ws`
 All messages use the following JSON format:
 
 ```json
-json
 {
 "action": "subscribe|publish|create",
 "topic": "topic-name",
