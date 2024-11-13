@@ -20,7 +20,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 2. Clone the repository: 
 ```bash
-git clone https://github.com/yourusername/rust-ws.git
+git clone https://github.com/jrivers-iclass/rust-ws.git
 cd rust-ws
 ```
 
