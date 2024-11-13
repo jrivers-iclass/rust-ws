@@ -113,13 +113,6 @@ Available commands:
 
 ## Heartbeat
 
-The server:
-- Sends ping frames every 5 seconds
-- Expects a response within 30 seconds
-- Disconnects clients that don't respond
-
-Most WebSocket clients handle ping/pong automatically.
-
 ## Example Client (JavaScript)
 ```javascript
 const ws = new WebSocket('ws://localhost:8000/ws');
