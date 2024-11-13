@@ -1,0 +1,17 @@
+<div class="message-input-container">
+  <mat-form-field appearance="outline">
+    <mat-label>Type a message</mat-label>
+    <textarea matInput
+              [formControl]="messageControl"
+              (keypress)="onKeyPress($event)"
+              placeholder="Press Enter to send, Shift+Enter for new line"
+              rows="1"></textarea>
+  </mat-form-field>
+  
+  <button mat-icon-button 
+          color="primary" 
+          (click)="sendMessage()"
+          [disabled]="!messageControl.value?.trim()">
+    <mat-icon>send</mat-icon>
+  </button>
+</div> 

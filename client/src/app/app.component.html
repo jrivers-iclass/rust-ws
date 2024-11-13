@@ -1,0 +1,28 @@
+<mat-toolbar color="primary">
+  <span>Slack-like Chat</span>
+  <span class="flex-spacer"></span>
+  <span class="connection-status">
+    <mat-icon [class.connected]="isConnected$ | async">
+      {{ (isConnected$ | async) ? 'cloud_done' : 'cloud_off' }}
+    </mat-icon>
+  </span>
+</mat-toolbar>
+
+<mat-sidenav-container>
+  <mat-sidenav mode="side" opened class="sidenav">
+    <div class="sidenav-content">
+      <div class="rooms-header">
+        <h3>Channels</h3>
+        <button mat-icon-button (click)="openCreateRoomDialog()">
+          <mat-icon>add</mat-icon>
+        </button>
+      </div>
+      <mat-divider></mat-divider>
+      <app-room-list></app-room-list>
+    </div>
+  </mat-sidenav>
+
+  <mat-sidenav-content class="main-content">
+    <app-chat-room></app-chat-room>
+  </mat-sidenav-content>
+</mat-sidenav-container> 

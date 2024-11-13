@@ -1,0 +1,39 @@
+<h2 mat-dialog-title>Create New Room</h2>
+<form [formGroup]="roomForm" (ngSubmit)="onSubmit()">
+  <mat-dialog-content>
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Room Name</mat-label>
+      <input matInput formControlName="name" placeholder="e.g., general">
+      <mat-error *ngIf="roomForm.get('name')?.hasError('pattern')">
+        Only letters, numbers, hyphens, and underscores allowed
+      </mat-error>
+      <mat-error *ngIf="roomForm.get('name')?.hasError('required')">
+        Room name is required
+      </mat-error>
+    </mat-form-field>
+
+    <mat-checkbox formControlName="isPrivate" class="private-checkbox">
+      Private Room (Password Protected)
+    </mat-checkbox>
+
+    <mat-form-field appearance="outline" class="full-width" 
+                    *ngIf="roomForm.get('isPrivate')?.value">
+      <mat-label>Password</mat-label>
+      <input matInput type="password" formControlName="password">
+      <mat-error *ngIf="roomForm.get('password')?.hasError('required')">
+        Password is required for private rooms
+      </mat-error>
+      <mat-error *ngIf="roomForm.get('password')?.hasError('minlength')">
+        Password must be at least 4 characters
+      </mat-error>
+    </mat-form-field>
+  </mat-dialog-content>
+
+  <mat-dialog-actions align="end">
+    <button mat-button mat-dialog-close type="button">Cancel</button>
+    <button mat-raised-button color="primary" type="submit" 
+            [disabled]="!roomForm.valid">
+      Create Room
+    </button>
+  </mat-dialog-actions>
+</form> 

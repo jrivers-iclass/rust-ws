@@ -1,0 +1,53 @@
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+mat-toolbar {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 16px;
+
+  .connection-status {
+    mat-icon {
+      color: #ff4444;
+      &.connected {
+        color: #00C851;
+      }
+    }
+  }
+}
+
+mat-sidenav-container {
+  flex: 1;
+}
+
+.sidenav {
+  width: 240px;
+  background-color: #3F0E40;
+  color: white;
+
+  .sidenav-content {
+    padding: 16px;
+
+    .rooms-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+
+      h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 500;
+      }
+    }
+  }
+}
+
+.main-content {
+  background-color: #fff;
+  display: flex;
+  flex-direction: column;
+} 

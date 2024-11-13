@@ -1,0 +1,41 @@
+<ng-container *ngIf="currentRoom$ | async as room">
+  <div class="chat-header">
+    <h2>
+      <mat-icon>{{ room.isSystem ? 'system_update' : (room.hasPassword ? 'lock' : 'tag') }}</mat-icon>
+      {{ room.name }}
+    </h2>
+  </div>
+
+  <div class="messages-container" #messageContainer>
+    <ng-container *ngIf="room.messages && room.messages.length > 0; else noMessages">
+      <div *ngFor="let message of room.messages; trackBy: trackByTimestamp; let i = index"
+           class="message"
+           [ngClass]="{'user-message': message.type === 'user', 'system-message': message.type === 'system'}">
+        <div class="message-content">{{message.content}}</div>
+        <div class="message-meta">
+          <span class="timestamp">{{message.timestamp | date:'short'}}</span>
+        </div>
+      </div>
+    </ng-container>
+    
+    <ng-template #noMessages>
+      <div class="no-messages">
+        No messages yet in room: {{room.id}}
+      </div>
+    </ng-template>
+  </div>
+
+  <app-message-input 
+    *ngIf="!room.isSystem"
+    [roomId]="room.id"
+    (sendMessage)="handleMessage(room.id, $event)">
+  </app-message-input>
+</ng-container>
+
+<ng-template #noRoom>
+  <div class="no-room">
+    <mat-icon>chat</mat-icon>
+    <h3>Select a room to start chatting</h3>
+    <p>Choose a room from the sidebar or create a new one</p>
+  </div>
+</ng-template> 

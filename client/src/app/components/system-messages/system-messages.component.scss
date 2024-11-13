@@ -1,0 +1,51 @@
+.system-messages {
+  padding: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+
+  .system-message {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    font-size: 14px;
+    
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      margin-right: 8px;
+    }
+
+    .message-content {
+      flex: 1;
+    }
+
+    .message-time {
+      color: rgba(0, 0, 0, 0.54);
+      font-size: 12px;
+      margin-left: 8px;
+    }
+
+    &.error {
+      background-color: #ffebee;
+      color: #c62828;
+    }
+
+    &.warning {
+      background-color: #fff3e0;
+      color: #ef6c00;
+    }
+
+    &.success {
+      background-color: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    &.info {
+      background-color: #e3f2fd;
+      color: #1565c0;
+    }
+  }
+} 
