@@ -47,6 +47,6 @@ async fn main() {
     let health_route = warp::path!("health").map(|| "OK");
     let routes = health_route.or(ws_route);
     
-    println!("Server started at ws://127.0.0.1:8000");
-    warp::serve(routes).run(([127, 0, 0, 1], 8000)).await;
+    println!("Server started at ws://0.0.0.0:8000");
+    warp::serve(routes).run(([0, 0, 0, 0], 8000)).await;
 }

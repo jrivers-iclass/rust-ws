@@ -39,9 +39,9 @@ export class ChatService {
     const currentRoom = this.currentRoomSubject.getValue();
     
     // Skip server acknowledgment messages
-    if (wsMessage.message?.includes('Message sent to')) {
-      return;
-    }
+    // if (wsMessage.message?.includes('Message sent to')) {
+    //   return;
+    // }
     
     if (wsMessage.topic === currentRoom.id && wsMessage.message) {
       const newMessage: Message = {

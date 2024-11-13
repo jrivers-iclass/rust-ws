@@ -124,32 +124,28 @@ async fn handle_client_message(client_id: &str, msg: Message, clients: &Clients,
                     return;
                 }
             };
-
-            let mut sent_count = 0;
-            {
-                let clients_guard = clients.read().await;
-                for subscriber_id in &topic.subscribers {
-                    if subscriber_id != client_id {
-                        if let Some(client) = clients_guard.get(subscriber_id) {
-                            let publish_message = serde_json::json!({
-                                "action": "publish",
-                                "topic": ws_message.topic,
-                                "message": message_content,
-                                "sender": client_id,
-                                "timestamp": chrono::Utc::now().to_rfc3339()
-                            });
-                            if client.sender.send(Message::text(publish_message.to_string())).is_ok() {
-                                sent_count += 1;
-                            }
-                        }
+            
+            let clients_guard = clients.read().await;
+            for subscriber_id in &topic.subscribers {
+                if subscriber_id != client_id {
+                    if let Some(client) = clients_guard.get(subscriber_id) {
+                        let publish_message = serde_json::json!({
+                            "action": "publish",
+                            "topic": ws_message.topic,
+                            "message": message_content,
+                            "sender": client_id,
+                            "timestamp": chrono::Utc::now().to_rfc3339()
+                        });
+                        client.sender.send(Message::text(publish_message.to_string())).unwrap();
                     }
                 }
             }
+            
             send_success(
                 client_id,
                 "publish",
                 &ws_message.topic,
-                &format!("Message sent to {} subscribers", sent_count),
+                &format!("{}", ws_message.message.unwrap()),
                 clients
             ).await;
         }

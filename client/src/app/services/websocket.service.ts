@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { WebSocketSubject, WebSocketSubjectConfig } from 'rxjs/webSocket';
 import { BehaviorSubject, Subject } from 'rxjs';
+import { environment } from '../../environments/environment';
 
 export type WebSocketAction = 'publish' | 'create' | 'subscribe';
 
@@ -18,7 +19,7 @@ export interface WebSocketMessage {
 })
 export class WebSocketService {
   private socket$!: WebSocketSubject<any>;
-  private wsUrl = 'ws://localhost:8000/ws';
+  private wsUrl = environment.wsUrl;
   public connected$ = new BehaviorSubject<boolean>(false);
   private messageSubject = new Subject<any>();
   private messagesSubject = new BehaviorSubject<WebSocketMessage>({} as WebSocketMessage);

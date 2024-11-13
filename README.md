@@ -29,8 +29,42 @@ cd rust-ws
 cargo run
 ```
 
-
 The server will start on `ws://localhost:8000/ws`
+
+## Docker Setup
+
+### Using Docker Compose (Recommended)
+1. Make sure you have Docker and Docker Compose installed
+2. Run the following command:
+```bash
+docker-compose up -d
+```
+
+This will start both the WebSocket server and the client application.
+- WebSocket Server: `ws://localhost:8000/ws`
+- Client Application: `http://localhost:80`
+
+### Manual Docker Setup
+If you prefer to run the containers separately:
+
+#### WebSocket Server
+```bash
+# Build the image
+docker build -t rust-ws-server .
+
+# Run the container
+docker run -d -p 8000:8000 rust-ws-server
+```
+
+#### Client Application
+```bash
+# Build the image
+cd client
+docker build -t rust-ws-client .
+
+# Run the container
+docker run -d -p 80:80 rust-ws-client
+```
 
 ## Message Format
 
