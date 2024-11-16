@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, error, warn};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use once_cell::sync::Lazy;
 
@@ -48,7 +48,3 @@ pub fn log_message(client_id: &str, action: &str, topic: &str) {
 pub fn log_rejected(client_id: &str, action: &str, topic: &str, reason: &str) {
     warn!("Rejected {} from client {} to topic {}: {}", action, client_id, topic, reason);
 }
-
-pub fn log_error_msg(client_id: &str, action: &str, error: &str) {
-    error!("Client {} error during {}: {}", client_id, action, error);
-} 
