@@ -11,10 +11,12 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
-futures-util = "0.3.28"
+futures-util = "0.3"
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 once_cell = "1.8"
 parking_lot = "0.12"
-chrono = "0.4.38"
+chrono = { version = "0.4", features = ["serde"] }
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
+serde_with = "3.4"

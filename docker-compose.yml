@@ -5,7 +5,12 @@ services:
       context: ./server
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "0:8000"
+    depends_on:
+      - redis
+    environment:
+      - SERVER_ID=ws{{.Task.Slot}}
+      - REDIS_HOST=redis:6379
 
   client:
     build:
@@ -16,6 +21,17 @@ services:
     depends_on:
       - websocket-server
 
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
 networks:
   default:
     driver: bridge
+
+volumes:
+  redis_data:

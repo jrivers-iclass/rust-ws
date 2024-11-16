@@ -38,6 +38,7 @@ pub fn log_disconnection(client_id: &str) {
     info!("Client disconnected: {}", client_id);
 }
 
+#[allow(dead_code)]
 pub fn log_message(client_id: &str, action: &str, topic: &str) {
     if VERBOSE_LOGGING.load(Ordering::Relaxed) {
         info!("Client {} {} topic {}", client_id, action, topic);
