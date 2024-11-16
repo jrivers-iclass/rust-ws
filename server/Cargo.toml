@@ -20,3 +20,4 @@ parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
 serde_with = "3.4"
+lapin = "2.3"

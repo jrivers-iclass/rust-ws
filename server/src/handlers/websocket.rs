@@ -7,9 +7,13 @@ use std::sync::Arc;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::time::interval;
+use lapin::{
+    options::*, types::FieldTable, BasicProperties,
+    ExchangeKind,
+};
 
-use crate::state::{Clients, Topics, RedisState, Client};
-use crate::models::{WSMessage, WSError, Topic};
+use crate::state::{Clients, RedisState, Client, RabbitMQState};
+use crate::models::{WSMessage, WSError};
 use crate::utils::logger::{
     log_connection, log_disconnection, log_error_msg,
     log_rejected,
@@ -18,10 +22,15 @@ use crate::utils::logger::{
 pub async fn ws_handler(
     ws: warp::ws::Ws,
     clients: Clients,
-    topics: Topics,
     redis_state: Arc<RedisState>,
+    rabbitmq_state: Arc<RabbitMQState>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    Ok(ws.on_upgrade(move |socket| client_connection(socket, clients, topics, redis_state)))
+    Ok(ws.on_upgrade(move |socket| client_connection(
+        socket, 
+        clients, 
+        redis_state,
+        rabbitmq_state
+    )))
 }
 
 async fn send_success(
@@ -64,390 +73,291 @@ async fn send_error(
 pub async fn client_connection(
     ws: WebSocket,
     clients: Clients,
-    topics: Topics,
     redis_state: Arc<RedisState>,
+    rabbitmq_state: Arc<RabbitMQState>,
 ) {
-    let (mut client_ws_sender, mut client_ws_rcv) = ws.split();
-    let (client_sender, mut client_rcv) = mpsc::unbounded_channel();
-
     let client_id = Uuid::new_v4().to_string();
     log_connection(&client_id);
 
-    // Add client to Redis and local state
-    {
-        let mut clients = clients.write().await;
-        clients.insert(client_id.clone(), Client {
+    // Add client to Redis with server_id
+    let mut conn = redis_state.connection.clone();
+    let _: Result<(), RedisError> = redis::pipe()
+        .hset(
+            format!("clients:{}", client_id),
+            "server_id",
+            &redis_state.server_id
+        )
+        .hset(
+            format!("clients:{}", client_id),
+            "connected_at",
+            chrono::Utc::now().to_rfc3339()
+        )
+        .query_async(&mut conn)
+        .await;
+
+    // Split the WebSocket
+    let (mut client_ws_sender, mut client_ws_rcv) = ws.split();
+    let (client_sender, mut client_rcv) = mpsc::unbounded_channel();
+
+    // Add the client to our clients map
+    clients.write().await.insert(
+        client_id.clone(),
+        Client {
             sender: client_sender,
-        });
+        },
+    );
 
-        // Add to Redis clients hash
-        let mut conn = redis_state.connection.clone();
-        let client_key = format!("clients:{}", client_id);
-        let _: Result<(), RedisError> = redis::pipe()
-            .hset(&client_key, "server_id", &redis_state.server_id)
-            .hset(&client_key, "connected_at", chrono::Utc::now().to_rfc3339())
-            .query_async(&mut conn)
-            .await;
-    }
+    let clients_clone = clients.clone();
+    let client_id_for_recv = client_id.clone();
+    let client_id_for_cleanup = client_id.clone();
+    let redis_state_for_recv = Arc::clone(&redis_state);
+    let redis_state_for_cleanup = Arc::clone(&redis_state);
+    let rabbitmq_state = Arc::clone(&rabbitmq_state);
 
-    // Clone client_id for the send task
-    let send_task_client_id = client_id.clone();
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(result) = client_ws_rcv.next().await {
+            match result {
+                Ok(msg) => {
+                    handle_client_message(
+                        &client_id_for_recv,
+                        msg,
+                        &clients_clone,
+                        &redis_state_for_recv,
+                        &rabbitmq_state,
+                    ).await;
+                }
+                Err(e) => {
+                    eprintln!("Error receiving message for client {}: {}", client_id_for_recv, e);
+                    break;
+                }
+            }
+        }
 
-    // Forward messages from the channel to the websocket
-    let _send_task = tokio::spawn(async move {
+        // Client disconnected
+        log_disconnection(&client_id_for_recv);
+        clients_clone.write().await.remove(&client_id_for_recv);
+    });
+
+    let mut send_task = tokio::spawn(async move {
         while let Some(message) = client_rcv.recv().await {
             if let Err(e) = client_ws_sender.send(message).await {
-                log_error_msg(&send_task_client_id, "send", &e.to_string());
+                eprintln!("Error sending websocket msg: {}", e);
                 break;
             }
         }
     });
 
-    // Handle incoming messages
-    while let Some(result) = client_ws_rcv.next().await {
-        let msg = match result {
-            Ok(msg) => msg,
-            Err(e) => {
-                log_error_msg(&client_id, "receive", &e.to_string());
-                break;
-            }
-        };
-
-        if msg.is_text() {
-            handle_client_message(&client_id, msg, &clients, &topics, &redis_state).await;
+    // If any one of the tasks exit, abort the other and cleanup
+    tokio::select! {
+        _ = (&mut send_task) => {
+            recv_task.abort();
+            cleanup_on_disconnect(&client_id_for_cleanup, &redis_state_for_cleanup).await;
         }
-    }
-
-    // Cleanup on disconnect
-    log_disconnection(&client_id);
-    clients.write().await.remove(&client_id);
-
-    // Remove from Redis clients hash
-    let mut conn = redis_state.connection.clone();
-    let _: Result<(), RedisError> = conn.del(format!("clients:{}", client_id)).await;
+        _ = (&mut recv_task) => {
+            send_task.abort();
+            cleanup_on_disconnect(&client_id_for_cleanup, &redis_state_for_cleanup).await;
+        }
+    };
 }
 
 async fn handle_client_message(
     client_id: &str,
     msg: Message,
     clients: &Clients,
-    topics: &Topics,
     redis_state: &RedisState,
+    rabbitmq_state: &RabbitMQState,
 ) {
-    let message = match msg.to_str() {
-        Ok(v) => v,
-        Err(_) => {
-            log_error_msg(client_id, "message parsing", "invalid message format");
-            send_error(client_id, "unknown", "", 500, "Invalid message format", clients).await;
-            return;
-        }
-    };
-
-    let ws_message: WSMessage = match serde_json::from_str(message) {
-        Ok(v) => v,
+    let msg = msg.to_str().unwrap_or_default();
+    
+    let ws_message: WSMessage = match serde_json::from_str(msg) {
+        Ok(message) => message,
         Err(e) => {
-            log_error_msg(client_id, "JSON parsing", &e.to_string());
-            send_error(client_id, "unknown", "", 500, "Invalid JSON format", clients).await;
+            log_error_msg(client_id, msg, &e.to_string());
             return;
         }
     };
 
     match ws_message.action.as_str() {
         "create_topic" => {
-            let topic_name = ws_message.topic.trim();
-            if topic_name.is_empty() {
-                log_rejected(client_id, "create_topic", topic_name, "topic name is empty");
-                send_error(client_id, "create_topic", topic_name, 400, "Topic name cannot be empty", clients).await;
-                return;
-            }
-
-            let mut topics_guard = topics.write().await;
-            if topics_guard.contains_key(topic_name) {
-                log_rejected(client_id, "create_topic", topic_name, "topic already exists");
-                send_error(client_id, "create_topic", topic_name, 409, "Topic already exists", clients).await;
-                return;
-            }
-
-            // Create new topic
-            let new_topic = Topic {
-                name: topic_name.to_string(),
-                creator: client_id.to_string(),
-                created_at: chrono::Utc::now(),
-                subscribers: vec![client_id.to_string()],
-            };
-
-            // Store in Redis
-            let mut conn = redis_state.connection.clone();
-            let topic_key = format!("topics:{}", topic_name);
-            
-            // Store topic metadata using individual HSET commands
-            let _: Result<(), RedisError> = redis::pipe()
-                .hset(&topic_key, "name", topic_name)
-                .hset(&topic_key, "creator", client_id)
-                .hset(&topic_key, "created_at", new_topic.created_at.to_rfc3339())
-                .query_async(&mut conn)
-                .await;
-
-            // Store subscribers
-            let _: Result<(), RedisError> = conn.sadd(
-                format!("{}:subscribers", topic_key),
-                client_id
-            ).await;
-
-            // Store in local state
-            topics_guard.insert(topic_name.to_string(), new_topic);
-
-            send_success(
+            handle_create_topic(
                 client_id,
-                "create_topic",
-                topic_name,
-                "Topic created successfully",
-                clients
-            ).await;
-        }
-        "publish" => {
-            println!("Publishing message to topic: {}", ws_message.topic);
-            let topics_guard = topics.read().await;
-            let topic = match topics_guard.get(&ws_message.topic) {
-                Some(topic) => topic,
-                None => {
-                    log_rejected(client_id, "publish", &ws_message.topic, "topic does not exist");
-                    send_error(client_id, "publish", &ws_message.topic, 404, "Topic does not exist", clients).await;
-                    return;
-                }
-            };
-
-            if !topic.subscribers.contains(&client_id.to_string()) {
-                log_rejected(client_id, "publish", &ws_message.topic, "not subscribed to topic");
-                send_error(client_id, "publish", &ws_message.topic, 403, "Not subscribed to topic", clients).await;
-                return;
-            }
-
-            let message_content = match &ws_message.message {
-                Some(content) => content,
-                None => {
-                    log_rejected(client_id, "publish", &ws_message.topic, "message content is required");
-                    send_error(client_id, "publish", &ws_message.topic, 400, "Message content is required", clients).await;
-                    return;
-                }
-            };
-
-            let publish_message = serde_json::json!({
-                "action": "publish",
-                "topic": ws_message.topic,
-                "message": message_content,
-                "sender": client_id,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "origin_server": redis_state.server_id
-            });
-
-            println!("Publishing message to Redis: {}", publish_message);
-
-            // Publish to Redis with explicit type annotation
-            let mut conn = redis_state.connection.clone();
-            let msg_string = publish_message.to_string();
-            let result: Result<i64, redis::RedisError> = conn.publish("messages", msg_string).await;
-            
-            match result {
-                Ok(_) => println!("Successfully published to Redis"),
-                Err(e) => eprintln!("Failed to publish to Redis: {}", e),
-            };
-            
-            send_success(
-                client_id,
-                "publish",
                 &ws_message.topic,
-                message_content,
-                clients
+                clients,
+                redis_state,
             ).await;
         }
         "subscribe" => {
-            let topic_name = ws_message.topic.trim();
-            if topic_name.is_empty() {
-                log_rejected(client_id, "subscribe", topic_name, "topic name is empty");
-                send_error(client_id, "subscribe", topic_name, 400, "Topic name cannot be empty", clients).await;
-                return;
-            }
-
-            let mut topics_guard = topics.write().await;
-            let topic = match topics_guard.get_mut(topic_name) {
-                Some(topic) => topic,
-                None => {
-                    log_rejected(client_id, "subscribe", topic_name, "topic does not exist");
-                    send_error(client_id, "subscribe", topic_name, 404, "Topic does not exist", clients).await;
-                    return;
-                }
-            };
-
-            // Check Redis first
-            let mut conn = redis_state.connection.clone();
-            let is_subscribed: bool = conn.sismember(
-                format!("topics:{}:subscribers", topic_name),
-                client_id
-            ).await.unwrap_or(false);
-
-            if is_subscribed {
-                log_rejected(client_id, "subscribe", topic_name, "already subscribed in Redis");
-                send_error(client_id, "subscribe", topic_name, 409, "Already subscribed to topic", clients).await;
-                return;
-            }
-
-            // Then check local state
-            if topic.subscribers.contains(&client_id.to_string()) {
-                // If not in Redis but in local state, remove from local state to maintain consistency
-                topic.subscribers.retain(|id| id != &client_id.to_string());
-            }
-
-            // Add subscriber to Redis
-            let _: Result<(), RedisError> = conn.sadd(
-                format!("topics:{}:subscribers", topic_name),
-                client_id
-            ).await;
-
-            // Add subscriber to local state
-            topic.subscribers.push(client_id.to_string());
-
-            send_success(
+            handle_subscribe(
                 client_id,
-                "subscribe",
-                topic_name,
-                "Subscribed to topic successfully",
-                clients
+                &ws_message.topic,
+                clients,
+                redis_state,
             ).await;
         }
+        "publish" => {
+            if let Some(message) = ws_message.message {
+                let payload = serde_json::json!({
+                    "action": "message",
+                    "topic": ws_message.topic,
+                    "message": message,
+                    "sender": client_id,
+                    "timestamp": chrono::Utc::now().to_rfc3339()
+                });
+
+                if let Ok(payload_str) = serde_json::to_string(&payload) {
+                    println!("Publishing message to RabbitMQ: {}", payload_str);
+                    if let Err(e) = rabbitmq_state.channel
+                        .basic_publish(
+                            "message_fanout",
+                            "",  // No routing key for fanout
+                            BasicPublishOptions::default(),
+                            payload_str.as_bytes(),
+                            BasicProperties::default(),
+                        )
+                        .await
+                    {
+                        eprintln!("Failed to publish to RabbitMQ: {}", e);
+                        return;
+                    }
+                }
+            }
+        }
         _ => {
-            log_rejected(client_id, &ws_message.action, &ws_message.topic, "unknown action");
-            send_error(client_id, &ws_message.action, &ws_message.topic, 400, "Unknown action", clients).await;
+            log_error_msg(client_id, msg, "unknown action");
         }
     }
 }
 
-async fn handle_redis_message(
-    msg: String,
+async fn handle_rabbitmq_message(
+    payload: &str,
     clients: &Clients,
     redis_state: &RedisState,
 ) {
-    println!("Received Redis message: {}", msg);
+    println!("Received RabbitMQ message: {}", payload);
+    if let Ok(message) = serde_json::from_str::<serde_json::Value>(payload) {
+        if let (Some(topic), Some(sender)) = (
+            message.get("topic").and_then(Value::as_str),
+            message.get("sender").and_then(Value::as_str)
+        ) {
+            let mut conn = redis_state.connection.clone();
+            let subscribers: Vec<String> = conn
+                .smembers(format!("topics:{}:subscribers", topic))
+                .await
+                .unwrap_or_default();
 
-    let message: Value = match serde_json::from_str(&msg) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Failed to parse Redis message: {}", e);
-            return;
-        }
-    };
-
-    // Extract fields from the message
-    let topic = match message.get("topic").and_then(|v| v.as_str()) {
-        Some(t) => t,
-        None => {
-            eprintln!("Missing topic in Redis message");
-            return;
-        }
-    };
-
-    let sender = message.get("sender")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    println!("Message for topic: {}, from sender: {}", topic, sender);
-
-    // Get subscribers for this topic
-    let mut conn = redis_state.connection.clone();
-    let subscribers: Vec<String> = match conn.smembers(format!("topics:{}:subscribers", topic)).await {
-        Ok(subs) => subs,
-        Err(e) => {
-            eprintln!("Failed to get subscribers from Redis: {}", e);
-            return;
-        }
-    };
-
-    println!("Found subscribers: {:?}", subscribers);
-
-    // Prepare message for clients
-    let client_message = serde_json::json!({
-        "action": "message",
-        "topic": topic,
-        "message": message.get("message"),
-        "sender": sender,
-        "timestamp": message.get("timestamp")
-    });
-
-    let msg_str = match serde_json::to_string(&client_message) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to serialize message: {}", e);
-            return;
-        }
-    };
-
-    // Send to all subscribers except the sender
-    let clients_guard = clients.read().await;
-    for subscriber_id in subscribers {
-        // Skip sending to the original sender
-        if subscriber_id == sender {
-            println!("Skipping message to original sender: {}", sender);
-            continue;
-        }
-
-        println!("Attempting to send to subscriber: {}", subscriber_id);
-        match clients_guard.get(&subscriber_id) {
-            Some(client) => {
-                if let Err(e) = client.sender.send(Message::text(msg_str.clone())) {
-                    eprintln!("Failed to send message to client {}: {}", subscriber_id, e);
-                } else {
-                    println!("Successfully sent message to client {}", subscriber_id);
+            // Forward message only to subscribers on this server
+            let clients_guard = clients.read().await;
+            for subscriber_id in subscribers {
+                if subscriber_id == sender {
+                    continue; // Skip sender
                 }
-            }
-            None => {
-                println!("Client {} not found on this server, cleaning up", subscriber_id);
-                // Client not found on this server, clean up Redis
-                let _: Result<(), redis::RedisError> = redis::pipe()
-                    .srem(
-                        format!("topics:{}:subscribers", topic),
-                        &subscriber_id
+
+                // Check if subscriber belongs to this server
+                let server_id: String = match conn
+                    .hget(
+                        format!("topics:{}:subscribers:{}", topic, subscriber_id),
+                        "server_id"
                     )
-                    .query_async(&mut conn)
-                    .await;
+                    .await
+                {
+                    Ok(sid) => sid,
+                    Err(_) => continue,
+                };
+
+                if server_id == redis_state.server_id {
+                    if let Some(client) = clients_guard.get(&subscriber_id) {
+                        println!("Forwarding message to client {}", subscriber_id);
+                        let _ = client.sender.send(Message::text(payload.to_string()));
+                    }
+                }
             }
         }
     }
 }
 
-pub async fn start_redis_subscriber(
+pub async fn start_rabbitmq_consumer(
+    rabbitmq_state: Arc<RabbitMQState>,
     redis_state: Arc<RedisState>,
     clients: Clients,
 ) {
-    println!("Starting Redis subscriber for server: {}", redis_state.server_id); // Debug log
-
-    let client = redis::Client::open(redis_state.url.as_str())
-        .expect("Failed to create Redis client");
+    println!("Starting RabbitMQ consumer for server {}", rabbitmq_state.server_id);
     
-    let connection = client.get_async_connection()
+    // Declare fanout exchange
+    if let Err(e) = rabbitmq_state.channel
+        .exchange_declare(
+            "message_fanout",
+            ExchangeKind::Fanout,
+            ExchangeDeclareOptions {
+                durable: true,
+                ..ExchangeDeclareOptions::default()
+            },
+            FieldTable::default(),
+        )
         .await
-        .expect("Failed to get async connection");
-
-    let mut pubsub = connection.into_pubsub();
-    
-    if let Err(e) = pubsub.subscribe("messages").await {
-        eprintln!("Failed to subscribe to Redis channel: {}", e);
+    {
+        eprintln!("Failed to declare exchange: {}", e);
         return;
     }
 
-    println!("Successfully subscribed to 'messages' channel"); // Debug log
+    // Create a queue with a unique name for this server
+    let queue_name = format!("queue_{}", rabbitmq_state.server_id);
+    if let Err(e) = rabbitmq_state.channel
+        .queue_declare(
+            &queue_name,
+            QueueDeclareOptions {
+                auto_delete: true,  // Queue will be deleted when consumer disconnects
+                ..QueueDeclareOptions::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+    {
+        eprintln!("Failed to declare queue: {}", e);
+        return;
+    }
 
-    let mut messages = pubsub.on_message();
-    
-    while let Some(msg) = messages.next().await {
-        let payload: String = match msg.get_payload() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to get message payload: {}", e);
-                continue;
+    // Bind queue to fanout exchange
+    if let Err(e) = rabbitmq_state.channel
+        .queue_bind(
+            &queue_name,
+            "message_fanout",
+            "",  // Routing key is ignored for fanout exchanges
+            QueueBindOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+    {
+        eprintln!("Failed to bind queue: {}", e);
+        return;
+    }
+
+    // Start consuming messages
+    let mut consumer = match rabbitmq_state.channel
+        .basic_consume(
+            &queue_name,
+            &rabbitmq_state.server_id,
+            BasicConsumeOptions::default(),
+            FieldTable::default(),
+        )
+        .await
+    {
+        Ok(consumer) => consumer,
+        Err(e) => {
+            eprintln!("Failed to create consumer: {}", e);
+            return;
+        }
+    };
+
+    println!("RabbitMQ consumer started successfully");
+
+    // Process messages
+    while let Some(delivery) = consumer.next().await {
+        if let Ok(delivery) = delivery {
+            if let Ok(payload) = String::from_utf8(delivery.data.clone()) {
+                handle_rabbitmq_message(&payload, &clients, &redis_state).await;
             }
-        };
-
-        handle_redis_message(payload, &clients, &redis_state).await;
+            let _ = delivery.ack(BasicAckOptions::default()).await;
+        }
     }
 }
 
@@ -455,12 +365,12 @@ pub async fn start_cleanup_task(
     redis_state: Arc<RedisState>,
     clients: Clients,
 ) {
-    println!("Starting cleanup task for server: {}", redis_state.server_id);
-    let mut interval = interval(Duration::from_secs(30));
-
+    let mut interval = interval(Duration::from_secs(60));
+    let redis_state = redis_state.as_ref(); // Get a reference to the inner RedisState
+    
     loop {
         interval.tick().await;
-        cleanup_disconnected_clients(&redis_state, &clients).await;
+        cleanup_disconnected_clients(redis_state, &clients).await;
     }
 }
 
@@ -519,4 +429,122 @@ async fn cleanup_disconnected_clients(
             }
         }
     }
+}
+
+async fn handle_create_topic(
+    client_id: &str,
+    topic_name: &str,
+    clients: &Clients,
+    redis_state: &RedisState,
+) {
+    let mut conn = redis_state.connection.clone();
+    let topic_key = format!("topics:{}", topic_name);
+    
+    // Check if topic exists in Redis
+    let exists: bool = conn.exists(&topic_key).await.unwrap_or(false);
+    if exists {
+        log_rejected(client_id, "create_topic", topic_name, "topic already exists");
+        send_error(client_id, "create_topic", topic_name, 409, "Topic already exists", clients).await;
+        return;
+    }
+
+    // Create new topic in Redis
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let _: Result<(), RedisError> = redis::pipe()
+        .hset(&topic_key, "name", topic_name)
+        .hset(&topic_key, "creator", client_id)
+        .hset(&topic_key, "created_at", &created_at)
+        .query_async(&mut conn)
+        .await;
+
+    // Add creator as first subscriber
+    let _: Result<(), RedisError> = conn.sadd(
+        format!("topics:{}:subscribers", topic_name),
+        client_id
+    ).await;
+
+    send_success(
+        client_id,
+        "create_topic",
+        topic_name,
+        "Topic created successfully",
+        clients
+    ).await;
+}
+
+async fn handle_subscribe(
+    client_id: &str,
+    topic_name: &str,
+    clients: &Clients,
+    redis_state: &RedisState,
+) {
+    let mut conn = redis_state.connection.clone();
+    let topic_key = format!("topics:{}", topic_name);
+
+    // Check if topic exists
+    let exists: bool = conn.exists(&topic_key).await.unwrap_or(false);
+    if !exists {
+        send_error(
+            client_id,
+            "subscribe",
+            topic_name,
+            404,
+            "Topic does not exist",
+            clients
+        ).await;
+        return;
+    }
+
+    // Add subscriber to both the set and store their server info
+    let _: Result<(), RedisError> = redis::pipe()
+        // Add to subscribers set
+        .sadd(
+            format!("topics:{}:subscribers", topic_name),
+            client_id
+        )
+        // Store subscriber metadata
+        .hset(
+            format!("topics:{}:subscribers:{}", topic_name, client_id),
+            "server_id",
+            &redis_state.server_id
+        )
+        .query_async(&mut conn)
+        .await;
+
+    println!("Added subscriber {} to topic {} on server {}", 
+        client_id, topic_name, redis_state.server_id);
+
+    send_success(
+        client_id,
+        "subscribe",
+        topic_name,
+        "Subscribed successfully",
+        clients
+    ).await;
+}
+
+async fn cleanup_on_disconnect(client_id: &str, redis_state: &RedisState) {
+    let mut conn = redis_state.connection.clone();
+    
+    // Get all topics this client is subscribed to
+    let topic_pattern = format!("topics:*:subscribers:{}", client_id);
+    let topic_keys: Vec<String> = conn.keys(&topic_pattern).await.unwrap_or_default();
+    
+    let mut pipe = redis::pipe();
+    
+    // Remove client from all topic subscriptions
+    for topic_key in topic_keys {
+        if let Some(topic) = topic_key.split(':').nth(1) {
+            pipe.srem(
+                format!("topics:{}:subscribers", topic),
+                client_id
+            );
+            pipe.del(format!("topics:{}:subscribers:{}", topic, client_id));
+        }
+    }
+    
+    // Remove client record
+    pipe.del(format!("clients:{}", client_id));
+    
+    let _: Result<(), RedisError> = pipe.query_async(&mut conn).await;
 } 
