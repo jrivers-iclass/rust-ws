@@ -1,8 +1,7 @@
 import { Component, OnInit } from '@angular/core';
-import { Observable } from 'rxjs';
 import { ChatService } from '../../services/chat.service';
+import { Observable, map } from 'rxjs';
 import { Room } from '../../models/room.model';
-import { map } from 'rxjs/operators';
 
 @Component({
   selector: 'app-room-list',
@@ -14,36 +13,35 @@ export class RoomListComponent implements OnInit {
   currentRoom$: Observable<Room | null>;
 
   constructor(private chatService: ChatService) {
-    this.rooms$ = this.chatService.getRooms();
+    this.rooms$ = this.chatService.rooms$.pipe(
+      map((rooms: Room[]) => {
+        const existingRooms = rooms.filter((r: Room) => r.id !== 'general');
+        return [
+          {
+            id: 'general',
+            name: 'General',
+            isSystem: true,
+            isPrivate: false,
+            hasPassword: false,
+            messages: []
+          } as Room,
+          ...existingRooms
+        ];
+      })
+    );
+    
     this.currentRoom$ = this.chatService.getCurrentRoom();
   }
 
-  ngOnInit() {
-    const generalRoom: Room = {
-      id: 'general',
-      name: 'General',
-      isSystem: true,
-      isPrivate: false,
-      hasPassword: false,
-      messages: []
-    };
-
-    this.rooms$ = this.chatService.rooms$.pipe(
-      map(rooms => {
-        const existingRooms = rooms.filter(r => r.id !== 'general');
-        return [generalRoom, ...existingRooms];
-      })
-    );
-  }
+  ngOnInit() {}
 
   joinRoom(room: Room) {
     this.chatService.setCurrentRoom(room);
   }
 
-  getRoomIcon(room: Room): string {
-    if (room.isSystem) return 'system_update';
+  getIcon(room: Room): string {
+    if (room.isSystem) return 'forum';
     if (room.isPrivate) return 'lock';
-    if (room.hasPassword) return 'key';
-    return 'tag';
+    return 'chat';
   }
 } 

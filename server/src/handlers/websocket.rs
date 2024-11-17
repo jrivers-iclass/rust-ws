@@ -208,7 +208,7 @@ async fn handle_client_message(
             }
 
             let payload = serde_json::json!({
-                "action": "message",
+                "action": "publish",
                 "message": message,
                 "topic": topic,
                 "sender": client_id,

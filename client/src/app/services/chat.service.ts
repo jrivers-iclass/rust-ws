@@ -1,127 +1,135 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { WebSocketService, WebSocketMessage, WebSocketAction } from './websocket.service';
+import { WebSocketService, WebSocketMessage } from './websocket.service';
 import { Room, Message } from '../models/room.model';
+import { map } from 'rxjs/operators';
 
 @Injectable({
   providedIn: 'root'
 })
 export class ChatService {
-  private currentRoomSubject = new BehaviorSubject<Room>({
-    id: 'general',
-    name: 'general',
-    isSystem: false,
-    isPrivate: false,
-    hasPassword: false,
-    messages: []
-  });
-  currentRoom$ = this.currentRoomSubject.asObservable();
-
-  private roomsSubject = new BehaviorSubject<Room[]>([]);
-  rooms$ = this.roomsSubject.asObservable();
-
-  private systemMessagesSubject = new BehaviorSubject<string[]>([]);
-  systemMessages$ = this.systemMessagesSubject.asObservable();
+  private currentRoom = new BehaviorSubject<Room | null>(null);
+  private rooms = new BehaviorSubject<Room[]>([
+    {
+      id: 'general',
+      name: 'General',
+      isSystem: false,
+      isPrivate: false,
+      hasPassword: false,
+      messages: [],
+      password: null
+    }
+  ]);
+  public rooms$ = this.rooms.asObservable();
 
   constructor(private wsService: WebSocketService) {
-    this.wsService.connect();
-    this.wsService.messages$.subscribe(message => {
-      console.log('WebSocket message received:', message);
-      if (message.action === 'publish') {
-        this.handleIncomingMessage(message);
-      } else {
-        console.log('Skipping non-publish message:', message.action);
+    // Subscribe to WebSocket messages
+    this.wsService.messages$.subscribe((message: WebSocketMessage) => {
+      console.log('ChatService received message:', message);
+      // Temporarily handle both types until server is fixed
+      if (message.action === 'publish' || message.action === 'message') {
+        const normalizedMessage: WebSocketMessage = {
+          ...message,
+          action: 'publish'  // normalize the action type
+        };
+        this.handleIncomingMessage(normalizedMessage);
       }
     });
   }
 
-  private handleIncomingMessage(wsMessage: WebSocketMessage) {
-    const currentRoom = this.currentRoomSubject.getValue();
+  private handleIncomingMessage(message: WebSocketMessage) {
+    console.log('Handling incoming message:', message);
+    const currentRooms = this.rooms.getValue();
+    const roomIndex = currentRooms.findIndex(r => r.id === message.topic);
     
-    // Skip server acknowledgment messages
-    // if (wsMessage.message?.includes('Message sent to')) {
-    //   return;
-    // }
-    
-    if (wsMessage.topic === currentRoom.id && wsMessage.message) {
+    if (roomIndex !== -1) {
+      // Create new message object
       const newMessage: Message = {
-        content: wsMessage.message,
-        timestamp: new Date(wsMessage.timestamp ?? Date.now()),
-        sender: wsMessage.sender || 'unknown',
-        type: 'user' as const
+        content: message.message || '',
+        timestamp: new Date(message.timestamp || Date.now()),
+        type: 'user',
+        sender: message.sender || 'Anonymous'
       };
 
+      console.log('New message created:', newMessage);
+      console.log('Current room state:', currentRooms[roomIndex]);
+
+      // Create new room object with updated messages
       const updatedRoom = {
-        ...currentRoom,
-        messages: [...(currentRoom.messages || []), newMessage]
+        ...currentRooms[roomIndex],
+        messages: [...(currentRooms[roomIndex].messages || []), newMessage]
       };
-      
-      this.currentRoomSubject.next(updatedRoom);
+
+      console.log('Updated room state:', updatedRoom);
+
+      // Update rooms array
+      const updatedRooms = [...currentRooms];
+      updatedRooms[roomIndex] = updatedRoom;
+      this.rooms.next(updatedRooms);
+
+      // Update current room if needed
+      const currentRoom = this.currentRoom.getValue();
+      if (currentRoom && currentRoom.id === message.topic) {
+        console.log('Updating current room with:', updatedRoom);
+        this.currentRoom.next(updatedRoom);
+      }
+    } else {
+      console.warn('Room not found for message:', message);
     }
   }
 
-  getRooms(): Observable<Room[]> {
-    return this.rooms$;
-  }
-
   getCurrentRoom(): Observable<Room | null> {
-    return this.currentRoom$;
+    return this.currentRoom.asObservable();
   }
 
   setCurrentRoom(room: Room) {
     console.log('Setting current room:', room);
     
-    const roomWithMessages = {
-      ...room,
-      messages: room.messages || []
-    };
+    // Subscribe to the room's messages
+    this.wsService.sendMessage({
+      action: 'subscribe',
+      topic: room.id
+    });
+
+    // Find the room in our rooms array
+    const currentRooms = this.rooms.getValue();
+    const existingRoom = currentRooms.find(r => r.id === room.id);
     
-    this.subscribeToRoom(room.id);
+    console.log('Found existing room:', existingRoom);
     
-    this.currentRoomSubject.next(roomWithMessages);
+    // Set the current room
+    this.currentRoom.next(existingRoom || room);
   }
 
-  getSystemMessages(): Observable<string[]> {
-    return this.systemMessages$;
-  }
-
-  publishMessage(topic: string, content: string) {
-    console.log('Publishing message:', { topic, content });
-    const message: WebSocketMessage = {
+  publishMessage(roomId: string, content: string) {
+    this.wsService.sendMessage({
       action: 'publish',
-      topic: topic,
+      topic: roomId,
       message: content
-    };
-    this.wsService.sendMessage(message);
+    });
   }
 
-  async createRoom(name: string, password?: string) {
-    const message: WebSocketMessage = {
-      action: 'create',
-      topic: name,
-      ...(password && { password })
-    };
-    
-    this.wsService.sendMessage(message);
-    
-    const currentRooms = this.roomsSubject.getValue();
+  getSystemMessages(): Observable<Message[]> {
+    return this.rooms$.pipe(
+      map(rooms => rooms.flatMap(room => room.messages || [])),
+      map(messages => messages.filter((msg): msg is Message => 
+        msg !== undefined && msg.type === 'system'
+      ))
+    );
+  }
+
+  createRoom(name: string, password: string | null) {
     const newRoom: Room = {
-      id: name,
-      name: name,
+      id: crypto.randomUUID(),
+      name,
       isSystem: false,
       isPrivate: !!password,
       hasPassword: !!password,
-      messages: []
+      messages: [],
+      password
     };
     
-    this.roomsSubject.next([...currentRooms, newRoom]);
-  }
-
-  subscribeToRoom(topic: string) {
-    const message: WebSocketMessage = {
-      action: 'subscribe',
-      topic: topic
-    };
-    this.wsService.sendMessage(message);
+    const currentRooms = this.rooms.getValue();
+    this.rooms.next([...currentRooms, newRoom]);
   }
 } 

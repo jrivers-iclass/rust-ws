@@ -1,16 +1,11 @@
-<div class="room-list-container">
-  <mat-nav-list class="room-list">
-    <a mat-list-item 
-       *ngFor="let room of rooms$ | async"
-       (click)="joinRoom(room)"
-       [class.active]="(currentRoom$ | async)?.id === room.id"
-       class="room-item">
-      <mat-icon>
-        {{ room.isSystem ? 'forum' : (room.isPrivate ? 'lock' : 'chat') }}
-      </mat-icon>
-      <span class="room-name">
-        {{ room.name | titlecase }}
-      </span>
-    </a>
-  </mat-nav-list>
+<div class="room-list">
+  <ng-container *ngIf="rooms$ | async as rooms">
+    <div *ngFor="let room of rooms"
+         class="room-item"
+         (click)="joinRoom(room)"
+         [class.active]="(currentRoom$ | async)?.id === room.id">
+      <mat-icon>{{ room.isSystem ? 'forum' : (room.isPrivate ? 'lock' : 'chat') }}</mat-icon>
+      <span class="room-name">{{ room.name }}</span>
+    </div>
+  </ng-container>
 </div> 

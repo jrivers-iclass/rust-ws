@@ -5,6 +5,7 @@ export interface Room {
   isPrivate: boolean;
   hasPassword: boolean;
   messages: Message[];
+  password?: string | null;
 }
 
 export interface Message {
@@ -12,5 +13,4 @@ export interface Message {
   timestamp: Date;
   type: 'system' | 'user';
   sender?: string;
-  username?: string;
 } 

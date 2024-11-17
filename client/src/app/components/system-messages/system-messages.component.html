@@ -1,9 +1,11 @@
 <div class="system-messages">
-  <div *ngFor="let message of systemMessages$ | async"
-       class="system-message"
-       [ngClass]="getSystemMessageClass(message.content)">
-    <mat-icon>{{ getSystemMessageIcon(message.content) }}</mat-icon>
-    <span class="message-content">{{ message.content }}</span>
-    <span class="message-time">{{ message.timestamp | date:'HH:mm' }}</span>
-  </div>
+  <ng-container *ngIf="systemMessages$ | async as messages">
+    <div *ngFor="let message of messages"
+         class="message"
+         [ngClass]="getSystemMessageClass(message.content)">
+      <mat-icon>{{ getSystemMessageIcon(message.content) }}</mat-icon>
+      <span class="message-content">{{ message.content }}</span>
+      <span class="timestamp">{{ message.timestamp | date:'short' }}</span>
+    </div>
+  </ng-container>
 </div> 

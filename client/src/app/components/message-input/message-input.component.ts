@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+import { Component, Input, OnInit, OnDestroy } from '@angular/core';
 import { ReactiveFormsModule, FormControl } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -6,6 +6,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { ChatService } from '../../services/chat.service';
 import { FormsModule } from '@angular/forms';
+import { Subscription } from 'rxjs';
+import { take } from 'rxjs/operators';
 
 @Component({
   selector: 'app-message-input',
@@ -21,21 +23,26 @@ import { FormsModule } from '@angular/forms';
     FormsModule
   ]
 })
-export class MessageInputComponent {
+export class MessageInputComponent implements OnInit, OnDestroy {
   @Input() roomId!: string;
-
   messageControl = new FormControl('');
+  private subscriptions = new Subscription();
 
   constructor(private chatService: ChatService) {}
 
+  ngOnInit() {
+    // Initialize any necessary subscriptions
+  }
+
+  ngOnDestroy() {
+    this.subscriptions.unsubscribe();
+  }
+
   sendMessage() {
-    if (this.messageControl.value?.trim()) {
-      this.chatService.getCurrentRoom().subscribe(room => {
-        if (room) {
-          this.chatService.publishMessage(room.id, this.messageControl.value!.trim());
-          this.messageControl.reset();
-        }
-      });
+    const message = this.messageControl.value?.trim();
+    if (message && this.roomId) {
+      this.chatService.publishMessage(this.roomId, message);
+      this.messageControl.reset();
     }
   }
 

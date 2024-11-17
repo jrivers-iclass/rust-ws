@@ -36,6 +36,7 @@ export class ChatRoomComponent implements AfterViewChecked, OnInit {
   ) {
     this.currentRoom$ = this.chatService.getCurrentRoom().pipe(
       tap(room => {
+        console.log('Current room updated:', room);
         setTimeout(() => {
           this.scrollToBottom();
           this.cdr.detectChanges();

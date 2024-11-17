@@ -3,15 +3,16 @@ import { WebSocketSubject, WebSocketSubjectConfig } from 'rxjs/webSocket';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { environment } from '../../environments/environment';
 
-export type WebSocketAction = 'publish' | 'create' | 'subscribe';
+export type WebSocketAction = 'publish' | 'subscribe' | 'message';
 
 export interface WebSocketMessage {
   action: WebSocketAction;
   topic: string;
-  message?: string;    // Required for 'publish'
-  password?: string; 
-  sender?: string;  // Optional for 'create'
+  message?: string;
+  sender?: string;
   timestamp?: string;
+  password?: string;
+  status?: string;
 }
 
 @Injectable({
